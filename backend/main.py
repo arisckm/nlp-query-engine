@@ -1,8 +1,18 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
+from pydantic import BaseModel
+import sqlite3
 from backend.schema_discovery import discover_schema
-import sqlite3, re
+from openai import OpenAI
+import os
 
-app = FastAPI(title="NLP Query Engine")  # <-- crucial
+app = FastAPI(title="NLP Query Engine")
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# ✅ Data model for input
+class QueryRequest(BaseModel):
+    question: str
 
 @app.get("/")
 def root():
@@ -14,27 +24,36 @@ def get_schema():
     return {"schema": schema}
 
 @app.post("/query")
-def run_query(user_query: str = Query(..., description="Natural language query")):
-    conn = sqlite3.connect("data/employees.db")
-    cursor = conn.cursor()
+def run_query(req: QueryRequest):
+    schema = discover_schema("data/employees.db")
 
-    sql = None
-    # Basic rules for demo
-    if "all employees" in user_query.lower():
-        sql = "SELECT * FROM employees;"
-    elif "it" in user_query.lower():
-        sql = "SELECT * FROM employees WHERE department='IT';"
-    elif "salary above" in user_query.lower():
-        match = re.search(r"salary above (\d+)", user_query.lower())
-        if match:
-            amount = match.group(1)
-            sql = f"SELECT * FROM employees WHERE salary > {amount};"
+    # Prompt to LLM
+    prompt = f"""
+    You are an expert in SQL.
+    Database schema: {schema}
+    Question: {req.question}
+    Write a correct SQLite query.
+    """
 
-    if not sql:
-        return {"error": "Query not understood yet."}
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
 
-    cursor.execute(sql)
-    rows = cursor.fetchall()
-    conn.close()
+    sql_query = response.choices[0].message.content.strip()
 
-    return {"query": sql, "results": rows}
+    # ✅ Run SQL safely
+    try:
+        conn = sqlite3.connect("data/employees.db")
+        cursor = conn.cursor()
+        cursor.execute(sql_query)
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        conn.close()
+
+        results = [dict(zip(columns, row)) for row in rows]
+        return {"sql": sql_query, "results": results}
+
+    except Exception as e:
+        return {"error": str(e), "sql": sql_query}
+
