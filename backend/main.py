@@ -1,18 +1,8 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Query
 import sqlite3
 from backend.schema_discovery import discover_schema
-from openai import OpenAI
-import os
 
-app = FastAPI(title="NLP Query Engine")
-
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# ✅ Data model for input
-class QueryRequest(BaseModel):
-    question: str
+app = FastAPI(title="NLP Query Engine")  # already there
 
 @app.get("/")
 def root():
@@ -23,37 +13,38 @@ def get_schema():
     schema = discover_schema("data/employees.db")
     return {"schema": schema}
 
-@app.post("/query")
-def run_query(req: QueryRequest):
-    schema = discover_schema("data/employees.db")
+# -------------------------------
+# NEW ENDPOINT: Natural Language Query
+# -------------------------------
+@app.get("/query")
+def run_query(q: str = Query(..., description="Natural language question")):
+    conn = sqlite3.connect("data/employees.db")
+    cur = conn.cursor()
 
-    # Prompt to LLM
-    prompt = f"""
-    You are an expert in SQL.
-    Database schema: {schema}
-    Question: {req.question}
-    Write a correct SQLite query.
-    """
+    sql = None
+    q_lower = q.lower()
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # --- Simple rules (expandable later) ---
+    if "all employees" in q_lower:
+        sql = "SELECT * FROM employees;"
+    elif "highest salary" in q_lower:
+        sql = "SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 1;"
+    elif "sales department" in q_lower:
+        sql = "SELECT name FROM employees WHERE department = 'Sales';"
+    elif "average salary" in q_lower:
+        sql = "SELECT department, AVG(salary) as avg_salary FROM employees GROUP BY department;"
+    elif "performance" in q_lower:
+        sql = "SELECT e.name, p.review_year, p.rating FROM employees e JOIN performance_reviews p ON e.id = p.employee_id;"
 
-    sql_query = response.choices[0].message.content.strip()
+    # Default fallback
+    if not sql:
+        return {"error": "Sorry, I don’t understand this query yet."}
 
-    # ✅ Run SQL safely
     try:
-        conn = sqlite3.connect("data/employees.db")
-        cursor = conn.cursor()
-        cursor.execute(sql_query)
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
+        cur.execute(sql)
+        rows = cur.fetchall()
+        cols = [description[0] for description in cur.description]
         conn.close()
-
-        results = [dict(zip(columns, row)) for row in rows]
-        return {"sql": sql_query, "results": results}
-
+        return {"query": q, "sql": sql, "results": [dict(zip(cols, row)) for row in rows]}
     except Exception as e:
-        return {"error": str(e), "sql": sql_query}
-
+        return {"error": str(e)}
