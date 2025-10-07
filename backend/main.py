@@ -1,50 +1,87 @@
-from fastapi import FastAPI, Query
 import sqlite3
-from backend.schema_discovery import discover_schema
+import os
+from textblob import TextBlob   # simple AI sentiment analysis
 
-app = FastAPI(title="NLP Query Engine")  # already there
+# --- Step 1: Ensure database ---
+os.makedirs("data", exist_ok=True)
+conn = sqlite3.connect("data/employees.db")
+cursor = conn.cursor()
 
-@app.get("/")
-def root():
-    return {"message": "NLP Query Engine API is running 🚀"}
+# Create tables
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS employees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    department TEXT,
+    salary REAL,
+    hire_date TEXT
+)
+""")
 
-@app.get("/schema")
-def get_schema():
-    schema = discover_schema("data/employees.db")
-    return {"schema": schema}
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS performance_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER,
+    review_year INTEGER,
+    rating REAL,
+    comments TEXT,
+    FOREIGN KEY(employee_id) REFERENCES employees(id)
+)
+""")
 
-# -------------------------------
-# NEW ENDPOINT: Natural Language Query
-# -------------------------------
-@app.get("/query")
-def run_query(q: str = Query(..., description="Natural language question")):
+# Insert sample data only if empty
+cursor.execute("SELECT COUNT(*) FROM employees")
+if cursor.fetchone()[0] == 0:
+    cursor.execute("INSERT INTO employees (name, department, salary, hire_date) VALUES ('Alice', 'Engineering', 70000, '2022-01-15')")
+    cursor.execute("INSERT INTO employees (name, department, salary, hire_date) VALUES ('Bob', 'Marketing', 50000, '2021-06-10')")
+    cursor.execute("INSERT INTO employees (name, department, salary, hire_date) VALUES ('Charlie', 'HR', 60000, '2023-03-01')")
+
+    cursor.execute("INSERT INTO performance_reviews (employee_id, review_year, rating, comments) VALUES (1, 2023, 4.5, 'Excellent work')")
+    cursor.execute("INSERT INTO performance_reviews (employee_id, review_year, rating, comments) VALUES (2, 2023, 4.0, 'Good performance')")
+    cursor.execute("INSERT INTO performance_reviews (employee_id, review_year, rating, comments) VALUES (3, 2023, 3.8, 'Satisfactory but needs improvement')")
+
+conn.commit()
+conn.close()
+
+# --- Step 2: Fraud Detection ---
+def detect_fraud():
     conn = sqlite3.connect("data/employees.db")
-    cur = conn.cursor()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, salary FROM employees WHERE salary < 1000 OR salary > 200000")
+    frauds = cursor.fetchall()
+    conn.close()
+    return frauds
 
-    sql = None
-    q_lower = q.lower()
+# --- Step 3: AI Documentation Review (Sentiment Analysis) ---
+def analyze_reviews():
+    conn = sqlite3.connect("data/employees.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT e.name, p.comments FROM employees e JOIN performance_reviews p ON e.id = p.employee_id")
+    reviews = cursor.fetchall()
+    conn.close()
 
-    # --- Simple rules (expandable later) ---
-    if "all employees" in q_lower:
-        sql = "SELECT * FROM employees;"
-    elif "highest salary" in q_lower:
-        sql = "SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 1;"
-    elif "sales department" in q_lower:
-        sql = "SELECT name FROM employees WHERE department = 'Sales';"
-    elif "average salary" in q_lower:
-        sql = "SELECT department, AVG(salary) as avg_salary FROM employees GROUP BY department;"
-    elif "performance" in q_lower:
-        sql = "SELECT e.name, p.review_year, p.rating FROM employees e JOIN performance_reviews p ON e.id = p.employee_id;"
+    results = []
+    for name, comment in reviews:
+        polarity = TextBlob(comment).sentiment.polarity
+        if polarity > 0.2:
+            sentiment = "Positive"
+        elif polarity < -0.2:
+            sentiment = "Negative"
+        else:
+            sentiment = "Neutral"
+        results.append((name, comment, sentiment))
+    return results
 
-    # Default fallback
-    if not sql:
-        return {"error": "Sorry, I don’t understand this query yet."}
+# --- Step 4: Run Everything ---
+print("=== Fraud Detection ===")
+frauds = detect_fraud()
+if frauds:
+    for f in frauds:
+        print(f"⚠️ {f[0]} has suspicious salary: {f[1]}")
+else:
+    print("✅ No fraud detected")
 
-    try:
-        cur.execute(sql)
-        rows = cur.fetchall()
-        cols = [description[0] for description in cur.description]
-        conn.close()
-        return {"query": q, "sql": sql, "results": [dict(zip(cols, row)) for row in rows]}
-    except Exception as e:
-        return {"error": str(e)}
+print("\n=== AI Documentation Review (Sentiment Analysis) ===")
+reviews = analyze_reviews()
+for r in reviews:
+    print(f"Employee: {r[0]} | Comment: {r[1]} | Sentiment: {r[2]}")
